@@ -9,7 +9,7 @@ module.exports = {
     env: {
       NODE_ENV: 'aws',
       PORT: 3001,
-      SECRET_NAME: 'money2-backend-dev-secret-rds',
+      SECRET_NAME: 'projeto-backend-dev-secret-rds',
       AWS_REGION: 'us-east-1',
       // JWT_SECRET será injetado via variável de ambiente no application_start.sh
       JWT_SECRET: process.env.JWT_SECRET || ''
