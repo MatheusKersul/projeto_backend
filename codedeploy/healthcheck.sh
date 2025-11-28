@@ -7,69 +7,86 @@ APP_NAME="meu-backend"
 MAX_RETRIES=30
 RETRY_DELAY=2
 
-echo "===== Iniciando validação robusta (JSON) ====="
+echo "===== Iniciando validação completa dos serviços ====="
 
+# Função para verificar se o serviço HTTP está respondendo
 check_http_health() {
   curl -f -s -o /dev/null http://localhost:$APP_PORT/ || return 1
   return 0
 }
 
+### Função para verificar se PM2 está rodando o processo
 check_pm2_health() {
-  # 1. Verifica se PM2 existe
+  # Verificar se PM2 está instalado
   if ! command -v pm2 >/dev/null 2>&1; then
-    echo "✗ PM2 não encontrado no PATH"
+    echo "✗ PM2 não encontrado"
     return 1
   fi
 
-  # 2. Pega o status real usando JSON (muito mais seguro que grep na tabela)
-  # Isso extrai apenas o status do processo com o nome exato
-  PM2_STATUS=$(pm2 jlist | grep -o "\"name\":\"$APP_NAME\".*\"status\":\"[^\"]*\"" | grep -o "\"status\":\"[^\"]*\"" | cut -d'"' -f4)
-
-  if [ -z "$PM2_STATUS" ]; then
-    echo "✗ Processo $APP_NAME não encontrado na lista do PM2"
-    # Debug: mostrar o que tem lá
-    pm2 jlist | grep "name"
+  # Verificar se o processo está online
+  if ! pm2 describe "$APP_NAME" >/dev/null 2>&1; then
+    echo "✗ Processo $APP_NAME não encontrado no PM2"
     return 1
   fi
 
-  echo "ℹ️  Status atual do PM2: [$PM2_STATUS]"
+  # Verificar status online
+  if ! pm2 describe "$APP_NAME" | grep -q "status.*online"; then
+    echo "✗ Processo $APP_NAME não está online"
+    return 1
+  fi
 
-  if [ "$PM2_STATUS" == "online" ]; then
+  return 0
+}
+
+# Função para verificar logs do PM2
+check_pm2_logs() {
+  LOG_DIR="/opt/apps/backend/current/logs"
+
+  # Verificar se diretório de logs existe
+  if [ ! -d "$LOG_DIR" ]; then
+    echo "⚠️  Diretório de logs não encontrado: $LOG_DIR"
+    return 0  # Não fatal
+  fi
+
+  # Verificar se logs estão sendo gerados (modificados nos últimos 5 minutos)
+  if find "$LOG_DIR" -name "*.log" -mmin -5 | grep -q .; then
+    echo "✓ Logs do PM2 estão sendo gerados"
     return 0
   else
-    echo "✗ Esperado 'online', mas encontrei '$PM2_STATUS'"
-    # Se estiver com erro, mostra o log do erro imediatamente
-    if [ "$PM2_STATUS" == "errored" ]; then
-        echo "=== LOGS DE ERRO DO PM2 ==="
-        pm2 logs $APP_NAME --lines 15 --nostream --err
-        echo "==========================="
-    fi
-    return 1
+    echo "⚠️  Logs do PM2 não foram atualizados recentemente"
+    return 0  # Não fatal, apenas aviso
   fi
 }
 
-# Loop de Tentativas
+# Tentar validar o serviço com retry
 for i in $(seq 1 $MAX_RETRIES); do
-  echo "--- Tentativa $i de $MAX_RETRIES ---"
+  echo "Tentativa $i de $MAX_RETRIES..."
 
+  # 1. Verificar PM2 primeiro
   if check_pm2_health; then
-    echo "✓ PM2: Processo online!"
-    
+    echo "✓ PM2 está rodando $APP_NAME corretamente"
+
+    # 2. Verificar HTTP
     if check_http_health; then
-      echo "✓ HTTP: Respondendo na porta $APP_PORT"
-      echo "=== ✓ SUCESSO TOTAL ==="
+      echo "✓ Serviço HTTP está respondendo na porta $APP_PORT"
+
+      # 3. Verificar logs (opcional)
+      check_pm2_logs
+
+      echo "=== ✓ Validação completa: SUCESSO ==="
       exit 0
     else
-      echo "⚠️  HTTP: Porta $APP_PORT ainda não responde..."
+      echo "⚠️  PM2 online mas HTTP não responde ainda..."
     fi
   else
     echo "⚠️  PM2 ainda não está pronto..."
   fi
 
   if [ $i -lt $MAX_RETRIES ]; then
+    echo "Aguardando ${RETRY_DELAY}s antes da próxima tentativa..."
     sleep $RETRY_DELAY
   fi
 done
 
-echo "=== ✗ Falha: Timeout após $MAX_RETRIES tentativas ==="
+echo "=== ✗ Falha: Serviço não passou na validação após $MAX_RETRIES tentativas ==="
 exit 1
